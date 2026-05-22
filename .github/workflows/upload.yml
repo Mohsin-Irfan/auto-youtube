@@ -2,7 +2,7 @@ name: Daily YouTube Upload (Roshan Ayaat)
 
 on:
   schedule:
-        - cron: '30 20 * * *'   # 1:30 AM Pakistan Time (PKT)
+    - cron: '53 20 * * *'   # 1:53 AM Pakistan Time
   workflow_dispatch:       # allows manual trigger from GitHub UI
 
 jobs:
