@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 # ---------- Google Drive Service Account ----------
-# Service account JSON string stored in GitHub secret
 SERVICE_ACCOUNT_INFO = json.loads(os.environ["GOOGLE_DRIVE_SERVICE_ACCOUNT"])
 from google.oauth2 import service_account
 drive_creds = service_account.Credentials.from_service_account_info(
@@ -28,10 +27,9 @@ drive_creds = service_account.Credentials.from_service_account_info(
 )
 drive_service = build("drive", "v3", credentials=drive_creds)
 
-# ---------- YouTube OAuth (refresh token from secret) ----------
+# ---------- YouTube OAuth ----------
 def get_youtube_credentials():
     creds = None
-    # Load refresh token from environment
     refresh_token = os.environ.get("YOUTUBE_REFRESH_TOKEN")
     client_config = json.loads(os.environ["YOUTUBE_CLIENT_SECRET"])
     
@@ -43,21 +41,14 @@ def get_youtube_credentials():
             client_id=client_config["installed"]["client_id"],
             client_secret=client_config["installed"]["client_secret"]
         )
-        # Refresh if expired
         if creds.expired:
             creds.refresh(Request())
     else:
-        # First time setup (should not happen in Action; run get_youtube_token.py locally)
         raise Exception("No refresh token found. Run get_youtube_token.py first and set YOUTUBE_REFRESH_TOKEN secret.")
     return creds
 
 # ---------- Groq AI ----------
-try:
-    groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
-except KeyError:
-    raise Exception("GROQ_API_KEY environment variable not set. Please add it to GitHub secrets.")
-except TypeError as e:
-    raise Exception(f"Groq library version conflict: {e}. Please ensure groq==0.9.0 and httpx==0.27.0 are installed.")
+groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 def generate_metadata(surah_name):
     prompt = f"""You are an SEO expert for Islamic YouTube shorts. Generate YouTube metadata for a Quran Surah recitation video titled "{surah_name}".
@@ -77,18 +68,36 @@ def generate_metadata(surah_name):
     data = json.loads(response.choices[0].message.content)
     return data["title"], data["description"], data["tags"]
 
-# ---------- Google Drive: find first video in YouTubeQueue ----------
+# ---------- FIXED: Find first video INSIDE YouTubeQueue folder ----------
 def find_video_in_queue():
-    results = drive_service.files().list(
-        q="name contains 'YouTubeQueue' and mimeType contains 'video/'",
+    # Step 1: Find the folder named "YouTubeQueue"
+    folder_query = drive_service.files().list(
+        q="name='YouTubeQueue' and mimeType='application/vnd.google-apps.folder' and trashed=false",
         spaces="drive",
-        fields="files(id, name, mimeType, parents)",
+        fields="files(id, name)"
+    ).execute()
+    folders = folder_query.get("files", [])
+    
+    if not folders:
+        logger.error("YouTubeQueue folder not found in Drive. Please create it and share with service account.")
+        return None, None
+    
+    folder_id = folders[0]["id"]
+    logger.info(f"Found YouTubeQueue folder with ID: {folder_id}")
+    
+    # Step 2: List video files inside that folder
+    video_query = drive_service.files().list(
+        q=f"'{folder_id}' in parents and mimeType contains 'video/' and trashed=false",
+        spaces="drive",
+        fields="files(id, name, mimeType)",
         pageSize=1
     ).execute()
-    files = results.get("files", [])
+    files = video_query.get("files", [])
+    
     if not files:
-        logger.info("No video found in YouTubeQueue folder.")
+        logger.info(f"No video found inside YouTubeQueue folder (ID: {folder_id})")
         return None, None
+    
     file = files[0]
     file_id = file["id"]
     file_name = file["name"]
@@ -113,10 +122,10 @@ def upload_to_youtube(video_path, title, description, tags):
             "title": title[:100],
             "description": description[:5000],
             "tags": tags.split(","),
-            "categoryId": "22"  # 22 = People & Blogs
+            "categoryId": "22"
         },
         "status": {
-            "privacyStatus": "public",  # or "unlisted" if you want to review first
+            "privacyStatus": "public",
             "selfDeclaredMadeForKids": False
         }
     }
@@ -134,36 +143,29 @@ def upload_to_youtube(video_path, title, description, tags):
 def main():
     logger.info("Starting automatic upload process...")
     
-    # 1. Find video in Drive
     video_id, video_name = find_video_in_queue()
     if not video_id:
         logger.info("No video to upload. Exiting.")
         return
     
-    # 2. Extract surah name from filename (assume filename like "Surah Al-Fatiha.mp4")
     surah_name = os.path.splitext(video_name)[0].replace("_", " ").title()
+    logger.info(f"Surah name extracted: {surah_name}")
     
-    # 3. Generate metadata using Groq
     title, description, tags = generate_metadata(surah_name)
     logger.info(f"Generated Title: {title}")
     
-    # 4. Download video to temp file
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp_path = tmp.name
     download_video(video_id, tmp_path)
     
-    # 5. Upload to YouTube
     try:
         upload_to_youtube(tmp_path, title, description, tags)
-        # 6. Delete from Drive only if upload successful
         delete_video_from_drive(video_id)
     except Exception as e:
         logger.error(f"Upload failed: {e}")
-        # Do not delete video from Drive so it can be retried next day
     finally:
-        # Cleanup temp file
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-    
+
 if __name__ == "__main__":
     main()
