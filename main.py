@@ -52,7 +52,12 @@ def get_youtube_credentials():
     return creds
 
 # ---------- Groq AI ----------
-groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
+try:
+    groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
+except KeyError:
+    raise Exception("GROQ_API_KEY environment variable not set. Please add it to GitHub secrets.")
+except TypeError as e:
+    raise Exception(f"Groq library version conflict: {e}. Please ensure groq==0.9.0 and httpx==0.27.0 are installed.")
 
 def generate_metadata(surah_name):
     prompt = f"""You are an SEO expert for Islamic YouTube shorts. Generate YouTube metadata for a Quran Surah recitation video titled "{surah_name}".
