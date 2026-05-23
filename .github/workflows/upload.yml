@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '53 20 * * *'   # 1:53 AM Pakistan Time
+    - cron: '15 15 * * *'   # 1:53 AM Pakistan Time
   workflow_dispatch:       # allows manual trigger from GitHub UI
 
 jobs:
